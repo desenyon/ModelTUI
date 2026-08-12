@@ -145,6 +145,7 @@ func New() tea.Model {
 	pr := progress.New(
 		progress.WithDefaultBlend(),
 		progress.WithWidth(42),
+		progress.WithColors(colAccent, colBorderHot, colAccentAlt),
 	)
 
 	delegate := newItemDelegate(theme)
@@ -577,38 +578,50 @@ func (m model) selectedItem() (browseItem, bool) {
 func (m model) View() tea.View {
 	var body string
 	if !m.ready {
-		body = "Booting ModelTUI…"
+		body = m.theme.Brand.Render("Booting ModelTUI...")
 	} else if m.loading {
 		body = m.viewSplash()
 	} else if m.err != "" && m.index == nil {
 		body = m.theme.Error.Render("Error: "+m.err) + "\n" + m.theme.Help.Render("q quit")
 	} else if m.filterOpen && m.filterForm != nil {
 		panel := m.theme.PanelFocus.Width(min(72, m.width-4)).Render(m.filterForm.View())
-		body = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, panel)
+		body = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, panel,
+			lipgloss.WithWhitespaceStyle(lipgloss.NewStyle().Background(m.theme.Bg)))
 	} else {
 		body = m.viewMain()
 	}
+
+	// Paint full canvas background so the UI never looks washed-out.
+	body = lipgloss.NewStyle().
+		Width(max(1, m.width)).
+		Height(max(1, m.height)).
+		Background(m.theme.Bg).
+		Foreground(m.theme.Fg).
+		Render(body)
 
 	v := tea.NewView(m.zones.Scan(body))
 	v.AltScreen = true
 	v.MouseMode = tea.MouseModeCellMotion
 	v.WindowTitle = "ModelTUI · models.dev"
+	v.BackgroundColor = m.theme.Bg
+	v.ForegroundColor = m.theme.Fg
 	return v
 }
 
 func (m model) viewSplash() string {
 	logoY := m.logoSpring.intPos()
-	pad := strings.Repeat("\n", max(0, 2+logoY))
-	logo := m.theme.Brand.Render(splashLogo)
-	sub := m.theme.Subtitle.Render("The glamorous models.dev explorer")
-	spin := m.spin.View() + "  " + m.theme.Status.Render(m.status)
+	pad := strings.Repeat("\n", max(0, 1+logoY))
+	logo := gradientText(splashLogo, m.pulseAt)
+	sub := lipgloss.NewStyle().Foreground(colAccentAlt).Italic(true).
+		Render("The glamorous models.dev explorer")
+	spin := m.spin.View() + "  " + lipgloss.NewStyle().Foreground(colAccent).Render(m.status)
 	bar := m.progress.View()
+	ray := sparkleRow(min(40, max(12, m.width/3)), m.pulseAt)
+	rule := accentBar(min(56, max(24, m.width/2)), m.pulseAt)
 
-	shimmer := pulse(m.pulseAt, 1800*time.Millisecond)
-	ray := lipgloss.NewStyle().Foreground(m.theme.AccentAlt).Faint(shimmer < 0.55).Render("✦  providers · models · labs · pricing · benchmarks  ✦")
-
-	block := lipgloss.JoinVertical(lipgloss.Center, logo, "", sub, "", ray, "", spin, "", bar)
-	return pad + lipgloss.Place(m.width, max(10, m.height-2), lipgloss.Center, lipgloss.Center, block)
+	block := lipgloss.JoinVertical(lipgloss.Center, logo, "", sub, "", ray, "", rule, "", spin, "", bar)
+	return pad + lipgloss.Place(m.width, max(10, m.height-2), lipgloss.Center, lipgloss.Center, block,
+		lipgloss.WithWhitespaceStyle(lipgloss.NewStyle().Background(m.theme.Bg)))
 }
 
 func (m model) viewMain() string {
@@ -619,7 +632,7 @@ func (m model) viewMain() string {
 		listW = 20
 	}
 	detailW := max(20, m.width-listW-2)
-	bodyH := max(6, m.height-lipgloss.Height(header)-lipgloss.Height(tabs)-3)
+	bodyH := max(6, m.height-lipgloss.Height(header)-lipgloss.Height(tabs)-4)
 	if m.showHelp {
 		bodyH = max(6, bodyH-4)
 	}
@@ -634,30 +647,32 @@ func (m model) viewMain() string {
 
 	listView := listStyle.Width(listW).Height(bodyH).Render(m.lists[m.tab].View())
 	detailView := detailStyle.Width(detailW).Height(bodyH).Render(m.detail.View())
-	row := lipgloss.JoinHorizontal(lipgloss.Top, listView, detailView)
+	row := lipgloss.JoinHorizontal(lipgloss.Top, listView, " ", detailView)
 
 	footer := m.viewFooter()
-	parts := []string{header, tabs, row, footer}
+	rule := accentBar(max(10, m.width-2), m.pulseAt)
+	parts := []string{header, tabs, rule, row, footer}
 	if m.showHelp {
-		parts = append(parts[:len(parts)-1], m.help.View(m.keys), footer)
+		parts = []string{header, tabs, rule, row, m.help.View(m.keys), footer}
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 
 func (m model) viewHeader() string {
 	brand := m.theme.Brand.Render("◆ ModelTUI")
-	tag := m.theme.Subtitle.Render("models.dev catalog")
+	tag := lipgloss.NewStyle().Foreground(colAccentAlt).Render("models.dev")
 	stats := ""
 	if m.index != nil {
-		stats = m.theme.Status.Render(fmt.Sprintf("%d models  %d providers  %d offerings  %d labs",
-			len(m.index.Models), len(m.index.Providers), len(m.index.Offerings), len(m.index.Labs)))
+		stats = strings.Join([]string{
+			fmtStat(len(m.index.Models), "models"),
+			fmtStat(len(m.index.Providers), "providers"),
+			fmtStat(len(m.index.Offerings), "offerings"),
+			fmtStat(len(m.index.Labs), "labs"),
+		}, lipgloss.NewStyle().Foreground(colSubtle).Render("  ·  "))
 	}
 	left := lipgloss.JoinHorizontal(lipgloss.Top, brand, "  ", tag)
-	line := lipgloss.JoinHorizontal(lipgloss.Top,
-		left,
-		strings.Repeat(" ", max(1, m.width-lipgloss.Width(left)-lipgloss.Width(stats)-2)),
-		stats,
-	)
+	gap := max(1, m.width-lipgloss.Width(left)-lipgloss.Width(stats)-2)
+	line := lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", gap), stats)
 	return m.theme.Header.Width(m.width).Render(line)
 }
 
@@ -669,6 +684,10 @@ func (m model) viewTabs() string {
 		style := m.theme.TabIdle
 		if t == m.tab {
 			style = m.theme.TabActive
+			// Pulse the active tab border glow via alternating bold/normal feel.
+			if int(m.pulseAt.UnixNano()/int64(400*time.Millisecond))%2 == 0 {
+				style = style.Underline(true)
+			}
 		}
 		parts = append(parts, m.zones.Mark(fmt.Sprintf("tab-%d", t), style.Render(label)))
 	}
@@ -680,16 +699,20 @@ func (m model) viewFooter() string {
 	if m.focus == focusDetail {
 		focus = "detail"
 	}
-	refreshHint := "space:refresh"
+	refreshHint := lipgloss.NewStyle().Foreground(colAccent).Bold(true).Render("space") +
+		lipgloss.NewStyle().Foreground(colMuted).Render(":refresh")
 	if m.refreshing {
-		refreshHint = "refreshing…"
+		refreshHint = lipgloss.NewStyle().Foreground(colWarn).Bold(true).Render("refreshing...")
 	}
-	left := m.theme.Help.Render(fmt.Sprintf("%s  focus:%s  source:%s", refreshHint, focus, orDash(m.source)))
+	meta := lipgloss.NewStyle().Foreground(colSubtle).Render(
+		fmt.Sprintf("  focus:%s  source:%s", focus, orDash(m.source)),
+	)
+	left := refreshHint + meta
 	right := m.help.View(m.keys)
 	gap := max(1, m.width-lipgloss.Width(left)-lipgloss.Width(right)-2)
 	status := ""
 	if m.status != "" {
-		status = "\n " + m.theme.Status.Render(truncate(m.status, m.width-4))
+		status = "\n " + lipgloss.NewStyle().Foreground(colAccentAlt).Render(truncate(m.status, m.width-4))
 	}
 	return " " + left + strings.Repeat(" ", gap) + right + status
 }

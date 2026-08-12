@@ -8,6 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/fang/v2"
+	"github.com/charmbracelet/colorprofile"
 	"github.com/spf13/cobra"
 
 	"github.com/desenyon/ModelTUI/internal/ui"
@@ -15,6 +16,14 @@ import (
 )
 
 func main() {
+	// Prefer rich color even when terminal detection is conservative (e.g. some multiplexers).
+	if os.Getenv("COLORTERM") == "" {
+		_ = os.Setenv("COLORTERM", "truecolor")
+	}
+	if os.Getenv("TERM") == "" {
+		_ = os.Setenv("TERM", "xterm-256color")
+	}
+
 	root := &cobra.Command{
 		Use:   "modeltui",
 		Short: "A glamorous TUI for the models.dev AI model catalog",
@@ -26,7 +35,7 @@ capabilities, modalities, benchmarks, and every field exposed by the API.
 Press space to refresh the catalog. Requests are spaced and honor HTTP 429.`,
 		Version: update.Version,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			p := tea.NewProgram(ui.New())
+			p := tea.NewProgram(ui.New(), tea.WithColorProfile(colorprofile.TrueColor))
 			_, err := p.Run()
 			return err
 		},

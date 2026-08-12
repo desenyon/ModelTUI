@@ -136,31 +136,16 @@ func capabilityShort(reasoning, tools, attach, openWeights bool, structured *boo
 }
 
 type itemDelegate struct {
-	theme  Theme
-	styles list.DefaultItemStyles
+	theme Theme
 }
 
 func newItemDelegate(theme Theme) itemDelegate {
-	styles := list.NewDefaultItemStyles(true)
-	styles.NormalTitle = styles.NormalTitle.Foreground(theme.Fg).Padding(0, 0, 0, 2)
-	styles.NormalDesc = styles.NormalDesc.Foreground(theme.Muted).Padding(0, 0, 0, 2)
-	styles.SelectedTitle = styles.SelectedTitle.
-		Foreground(theme.Accent).
-		BorderForeground(theme.Accent).
-		Padding(0, 0, 0, 1)
-	styles.SelectedDesc = styles.SelectedDesc.
-		Foreground(theme.AccentAlt).
-		BorderForeground(theme.Accent).
-		Padding(0, 0, 0, 1)
-	styles.DimmedTitle = styles.DimmedTitle.Foreground(theme.Subtle)
-	styles.DimmedDesc = styles.DimmedDesc.Foreground(theme.Subtle)
-	styles.FilterMatch = lipgloss.NewStyle().Foreground(theme.AccentAlt).Underline(true)
-	return itemDelegate{theme: theme, styles: styles}
+	return itemDelegate{theme: theme}
 }
 
-func (d itemDelegate) Height() int                               { return 2 }
-func (d itemDelegate) Spacing() int                              { return 1 }
-func (d itemDelegate) Update(_ tea.Msg, _ *list.Model) tea.Cmd   { return nil }
+func (d itemDelegate) Height() int                             { return 2 }
+func (d itemDelegate) Spacing() int                            { return 1 }
+func (d itemDelegate) Update(_ tea.Msg, _ *list.Model) tea.Cmd { return nil }
 
 func (d itemDelegate) Render(w io.Writer, m list.Model, index int, listItem list.Item) {
 	i, ok := listItem.(browseItem)
@@ -168,17 +153,26 @@ func (d itemDelegate) Render(w io.Writer, m list.Model, index int, listItem list
 		return
 	}
 	selected := index == m.Index()
+	width := max(12, m.Width()-4)
 
-	titleStyle := d.styles.NormalTitle
-	descStyle := d.styles.NormalDesc
+	marker := lipgloss.NewStyle().Foreground(d.theme.Subtle).Render(" ")
+	titleStyle := lipgloss.NewStyle().Foreground(d.theme.Fg)
+	descStyle := lipgloss.NewStyle().Foreground(d.theme.Muted)
+
 	if selected {
-		titleStyle = d.styles.SelectedTitle
-		descStyle = d.styles.SelectedDesc
+		marker = lipgloss.NewStyle().Foreground(d.theme.Accent).Bold(true).Render("❯")
+		titleStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(d.theme.Accent).
+			Background(colSelectBg)
+		descStyle = lipgloss.NewStyle().
+			Foreground(d.theme.AccentAlt).
+			Background(colSelectBg)
 	}
 
-	title := titleStyle.Render(i.title)
-	desc := descStyle.Render(truncate(i.desc, m.Width()-4))
-	fmt.Fprintf(w, "%s\n%s", title, desc)
+	title := titleStyle.Width(width).Render(truncate(i.title, width))
+	desc := descStyle.Width(width).Render(truncate(i.desc, width))
+	fmt.Fprintf(w, "%s %s\n  %s", marker, title, desc)
 }
 
 func truncate(s string, width int) string {

@@ -35,10 +35,10 @@ case "$os" in
     ;;
 esac
 
-echo "→ Resolving latest release from GitHub ($REPO)…"
+echo "==> Resolving latest release from GitHub (${REPO})..."
 api="https://api.github.com/repos/${REPO}/releases/latest"
 tag="$(curl -fsSL "$api" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)"
-if [[ -z "$tag" ]]; then
+if [[ -z "${tag}" ]]; then
   echo "error: could not determine latest tag" >&2
   exit 1
 fi
@@ -47,68 +47,72 @@ asset="modeltui_${version}_${os}_${arch}.tar.gz"
 url="https://github.com/${REPO}/releases/download/${tag}/${asset}"
 
 tmpdir="$(mktemp -d)"
-trap 'rm -rf "$tmpdir"' EXIT
+trap 'rm -rf "${tmpdir}"' EXIT
 
-echo "→ Downloading $asset…"
-curl -fsSL "$url" -o "$tmpdir/$asset"
-tar -xzf "$tmpdir/$asset" -C "$tmpdir"
+echo "==> Downloading ${asset}..."
+curl -fsSL "${url}" -o "${tmpdir}/${asset}"
+tar -xzf "${tmpdir}/${asset}" -C "${tmpdir}"
 
-mkdir -p "$INSTALL_DIR"
-install -m 755 "$tmpdir/$BIN_NAME" "$INSTALL_DIR/$BIN_NAME"
+if [[ ! -f "${tmpdir}/${BIN_NAME}" ]]; then
+  echo "error: archive did not contain ${BIN_NAME}" >&2
+  exit 1
+fi
+
+mkdir -p "${INSTALL_DIR}"
+install -m 755 "${tmpdir}/${BIN_NAME}" "${INSTALL_DIR}/${BIN_NAME}"
 
 # Ensure INSTALL_DIR is on PATH for future shells.
-path_line="export PATH=\"$INSTALL_DIR:\$PATH\""
+path_line="export PATH=\"${INSTALL_DIR}:\$PATH\""
 append_path() {
   local rc="$1"
-  [[ -f "$rc" ]] || touch "$rc"
-  if grep -Fqs "$INSTALL_DIR" "$rc"; then
+  [[ -f "${rc}" ]] || touch "${rc}"
+  if grep -Fqs "${INSTALL_DIR}" "${rc}"; then
     return 0
   fi
   {
     echo ""
     echo "# ModelTUI"
-    echo "$path_line"
-  } >>"$rc"
-  echo "→ Added $INSTALL_DIR to PATH in $rc"
+    echo "${path_line}"
+  } >>"${rc}"
+  echo "==> Added ${INSTALL_DIR} to PATH in ${rc}"
 }
 
 case "${SHELL##*/}" in
-  zsh) append_path "$HOME/.zshrc" ;;
+  zsh) append_path "${HOME}/.zshrc" ;;
   bash)
-    if [[ -f "$HOME/.bashrc" ]]; then
-      append_path "$HOME/.bashrc"
+    if [[ -f "${HOME}/.bashrc" ]]; then
+      append_path "${HOME}/.bashrc"
     else
-      append_path "$HOME/.bash_profile"
+      append_path "${HOME}/.bash_profile"
     fi
     ;;
   fish)
-    fish_cfg="$HOME/.config/fish/config.fish"
-    mkdir -p "$(dirname "$fish_cfg")"
-    if ! grep -Fqs "$INSTALL_DIR" "$fish_cfg" 2>/dev/null; then
+    fish_cfg="${HOME}/.config/fish/config.fish"
+    mkdir -p "$(dirname "${fish_cfg}")"
+    if ! grep -Fqs "${INSTALL_DIR}" "${fish_cfg}" 2>/dev/null; then
       {
         echo ""
         echo "# ModelTUI"
-        echo "fish_add_path $INSTALL_DIR"
-      } >>"$fish_cfg"
-      echo "→ Added $INSTALL_DIR to PATH in $fish_cfg"
+        echo "fish_add_path ${INSTALL_DIR}"
+      } >>"${fish_cfg}"
+      echo "==> Added ${INSTALL_DIR} to PATH in ${fish_cfg}"
     fi
     ;;
   *)
-    append_path "$HOME/.profile"
+    append_path "${HOME}/.profile"
     ;;
 esac
 
-# Make it available in the current shell session when sourced-like usage.
-export PATH="$INSTALL_DIR:$PATH"
+export PATH="${INSTALL_DIR}:${PATH}"
 
 echo ""
-echo "✓ Installed $BIN_NAME $tag → $INSTALL_DIR/$BIN_NAME"
+echo "Installed ${BIN_NAME} ${tag} -> ${INSTALL_DIR}/${BIN_NAME}"
 echo ""
 echo "Start it with:"
 echo "  modeltui"
 echo ""
 if ! command -v modeltui >/dev/null 2>&1; then
-  echo "If 'modeltui' is not found yet, run:"
-  echo "  export PATH=\"$INSTALL_DIR:\$PATH\""
+  echo "If modeltui is not found yet, run:"
+  echo "  export PATH=\"${INSTALL_DIR}:\$PATH\""
   echo "  # or open a new terminal"
 fi
