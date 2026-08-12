@@ -1,0 +1,44 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+
+      - name: Build release archives
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          for pair in "darwin amd64" "darwin arm64" "linux amd64" "linux arm64"; do
+            set -- $pair
+            GOOS=$1 GOARCH=$2
+            out="modeltui_${VERSION}_${GOOS}_${GOARCH}"
+            echo "building $out"
+            CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH go build \
+              -ldflags "-s -w -X github.com/desenyon/ModelTUI/internal/update.Version=${VERSION}" \
+              -o "dist/modeltui" ./cmd/modeltui
+            tar -C dist -czf "dist/${out}.tar.gz" modeltui
+            rm -f dist/modeltui
+          done
+          ls -lh dist
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.tar.gz
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
