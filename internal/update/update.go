@@ -6,9 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -21,14 +20,13 @@ const (
 // Version is set via -ldflags at build time.
 var Version = "dev"
 
-// Result describes an available update.
 type Result struct {
-	Current    string
-	Latest     string
-	AssetURL   string
-	AssetName  string
-	UpToDate   bool
-	CheckedAt  time.Time
+	Current   string
+	Latest    string
+	AssetURL  string
+	AssetName string
+	UpToDate  bool
+	CheckedAt time.Time
 }
 
 type release struct {
@@ -39,20 +37,55 @@ type release struct {
 	} `json:"assets"`
 }
 
-// Check looks up the latest GitHub release for this OS/arch.
+// Check looks up the latest stable release for the current platform.
 func Check(ctx context.Context, repo string) (Result, error) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		return Result{}, fmt.Errorf("self-update supports macOS and Linux; build from source on %s", runtime.GOOS)
+	}
 	if repo == "" {
 		repo = defaultRepo
 	}
-	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repo)
+	return checkRelease(ctx, &http.Client{Timeout: 20 * time.Second}, "https://api.github.com/repos/"+repo+"/releases/latest", Version)
+}
+
+func parseVersion(v string) ([3]uint64, error) {
+	var out [3]uint64
+	if v == "dev" {
+		return out, fmt.Errorf("development build: update with go install or rebuild from source")
+	}
+	parts := strings.Split(strings.TrimPrefix(v, "v"), ".")
+	if len(parts) != 3 {
+		return out, fmt.Errorf("unsupported version %q: expected stable major.minor.patch", v)
+	}
+	for i, p := range parts {
+		if p == "" || (len(p) > 1 && p[0] == '0') {
+			return out, fmt.Errorf("invalid version %q", v)
+		}
+		for _, r := range p {
+			if r < '0' || r > '9' {
+				return out, fmt.Errorf("unsupported version %q: expected stable major.minor.patch", v)
+			}
+		}
+		n, err := strconv.ParseUint(p, 10, 64)
+		if err != nil {
+			return out, fmt.Errorf("invalid version %q: %w", v, err)
+		}
+		out[i] = n
+	}
+	return out, nil
+}
+
+func checkRelease(ctx context.Context, client *http.Client, url, current string) (Result, error) {
+	currentVersion, err := parseVersion(current)
+	if err != nil {
+		return Result{}, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return Result{}, err
 	}
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Accept", "application/vnd.github+json")
-
-	client := &http.Client{Timeout: 20 * time.Second}
 	res, err := client.Do(req)
 	if err != nil {
 		return Result{}, err
@@ -60,25 +93,36 @@ func Check(ctx context.Context, repo string) (Result, error) {
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(res.Body, 256))
-		return Result{}, fmt.Errorf("github releases: %s (%s)", res.Status, string(body))
+		return Result{}, fmt.Errorf("GitHub releases: %s (%s)", res.Status, string(body))
 	}
-	var rel release
-	if err := json.NewDecoder(res.Body).Decode(&rel); err != nil {
+	data, err := io.ReadAll(io.LimitReader(res.Body, (1<<20)+1))
+	if err != nil {
 		return Result{}, err
 	}
-	latest := strings.TrimPrefix(rel.TagName, "v")
-	current := strings.TrimPrefix(Version, "v")
-	out := Result{
-		Current:   current,
-		Latest:    latest,
-		UpToDate:  current == latest || current == "dev",
-		CheckedAt: time.Now(),
+	if len(data) > 1<<20 {
+		return Result{}, fmt.Errorf("release metadata exceeds 1 MiB")
 	}
+	var rel release
+	if err := json.Unmarshal(data, &rel); err != nil {
+		return Result{}, err
+	}
+	latestVersion, err := parseVersion(rel.TagName)
+	if err != nil {
+		return Result{}, err
+	}
+	upToDate := true
+	for i := range currentVersion {
+		if currentVersion[i] != latestVersion[i] {
+			upToDate = currentVersion[i] > latestVersion[i]
+			break
+		}
+	}
+	latest := strings.TrimPrefix(rel.TagName, "v")
+	out := Result{Current: strings.TrimPrefix(current, "v"), Latest: latest, UpToDate: upToDate, CheckedAt: time.Now()}
 	want := assetName(latest)
 	for _, a := range rel.Assets {
 		if a.Name == want {
-			out.AssetURL = a.BrowserDownloadURL
-			out.AssetName = a.Name
+			out.AssetURL, out.AssetName = a.BrowserDownloadURL, a.Name
 			break
 		}
 	}
@@ -89,70 +133,5 @@ func Check(ctx context.Context, repo string) (Result, error) {
 }
 
 func assetName(version string) string {
-	goos := runtime.GOOS
-	goarch := runtime.GOARCH
-	ext := ""
-	if goos == "windows" {
-		ext = ".exe"
-	}
-	return fmt.Sprintf("modeltui_%s_%s_%s%s", version, goos, goarch, ext)
-}
-
-// Apply downloads AssetURL and replaces the current executable.
-func Apply(ctx context.Context, assetURL string) error {
-	exe, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	exe, err = filepath.EvalSymlinks(exe)
-	if err != nil {
-		return err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, assetURL, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("User-Agent", userAgent)
-	client := &http.Client{Timeout: 3 * time.Minute}
-	res, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-	if res.StatusCode != http.StatusOK {
-		return fmt.Errorf("download failed: %s", res.Status)
-	}
-
-	dir := filepath.Dir(exe)
-	tmp, err := os.CreateTemp(dir, "modeltui-update-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer func() { _ = os.Remove(tmpName) }()
-
-	if _, err := io.Copy(tmp, res.Body); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(0o755); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-
-	backup := exe + ".bak"
-	_ = os.Remove(backup)
-	if err := os.Rename(exe, backup); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpName, exe); err != nil {
-		_ = os.Rename(backup, exe)
-		return err
-	}
-	_ = os.Remove(backup)
-	return nil
+	return fmt.Sprintf("modeltui_%s_%s_%s.tar.gz", version, runtime.GOOS, runtime.GOARCH)
 }

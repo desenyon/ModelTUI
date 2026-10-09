@@ -10,61 +10,61 @@ type Catalog struct {
 
 // Provider is a serving provider and its model offerings.
 type Provider struct {
-	ID     string                  `json:"id"`
-	Name   string                  `json:"name"`
-	API    string                  `json:"api,omitempty"`
-	NPM    string                  `json:"npm,omitempty"`
-	Doc    string                  `json:"doc,omitempty"`
-	Env    []string                `json:"env"`
+	ID     string                   `json:"id"`
+	Name   string                   `json:"name"`
+	API    string                   `json:"api,omitempty"`
+	NPM    string                   `json:"npm,omitempty"`
+	Doc    string                   `json:"doc,omitempty"`
+	Env    []string                 `json:"env"`
 	Models map[string]OfferingModel `json:"models"`
 }
 
 // CanonicalModel is provider-agnostic model metadata from models.json.
 type CanonicalModel struct {
-	ID               string         `json:"id"`
-	Name             string         `json:"name"`
-	Description      string         `json:"description,omitempty"`
-	Family           string         `json:"family,omitempty"`
-	Attachment       bool           `json:"attachment"`
-	Reasoning        bool           `json:"reasoning"`
-	ToolCall         bool           `json:"tool_call"`
-	StructuredOutput *bool          `json:"structured_output,omitempty"`
-	Temperature      bool           `json:"temperature"`
-	Knowledge        string         `json:"knowledge,omitempty"`
-	ReleaseDate      string         `json:"release_date,omitempty"`
-	LastUpdated      string         `json:"last_updated,omitempty"`
-	Modalities       *Modalities    `json:"modalities,omitempty"`
-	OpenWeights      bool           `json:"open_weights"`
-	Limit            Limit          `json:"limit"`
-	License          string         `json:"license,omitempty"`
-	Weights          []WeightLink   `json:"weights,omitempty"`
-	Links            []WeightLink   `json:"links,omitempty"`
-	Benchmarks       []Benchmark    `json:"benchmarks,omitempty"`
+	ID               string       `json:"id"`
+	Name             string       `json:"name"`
+	Description      string       `json:"description,omitempty"`
+	Family           string       `json:"family,omitempty"`
+	Attachment       bool         `json:"attachment"`
+	Reasoning        bool         `json:"reasoning"`
+	ToolCall         bool         `json:"tool_call"`
+	StructuredOutput *bool        `json:"structured_output,omitempty"`
+	Temperature      bool         `json:"temperature"`
+	Knowledge        string       `json:"knowledge,omitempty"`
+	ReleaseDate      string       `json:"release_date,omitempty"`
+	LastUpdated      string       `json:"last_updated,omitempty"`
+	Modalities       *Modalities  `json:"modalities,omitempty"`
+	OpenWeights      bool         `json:"open_weights"`
+	Limit            Limit        `json:"limit"`
+	License          string       `json:"license,omitempty"`
+	Weights          []WeightLink `json:"weights,omitempty"`
+	Links            []WeightLink `json:"links,omitempty"`
+	Benchmarks       []Benchmark  `json:"benchmarks,omitempty"`
 }
 
 // OfferingModel is a provider-specific model offering from api.json.
 type OfferingModel struct {
-	ID               string             `json:"id"`
-	Name             string             `json:"name"`
-	Description      string             `json:"description,omitempty"`
-	Family           string             `json:"family,omitempty"`
-	Attachment       bool               `json:"attachment"`
-	Reasoning        bool               `json:"reasoning"`
-	ReasoningOptions []ReasoningOption  `json:"reasoning_options,omitempty"`
-	ToolCall         bool               `json:"tool_call"`
-	StructuredOutput *bool              `json:"structured_output,omitempty"`
-	Temperature      bool               `json:"temperature"`
-	Interleaved      json.RawMessage    `json:"interleaved,omitempty"`
-	Knowledge        string             `json:"knowledge,omitempty"`
-	ReleaseDate      string             `json:"release_date,omitempty"`
-	LastUpdated      string             `json:"last_updated,omitempty"`
-	Modalities       *Modalities        `json:"modalities,omitempty"`
-	OpenWeights      bool               `json:"open_weights"`
-	Limit            Limit              `json:"limit"`
-	Cost             *Cost              `json:"cost,omitempty"`
-	Status           string             `json:"status,omitempty"`
-	Experimental     json.RawMessage    `json:"experimental,omitempty"`
-	Provider         *OfferingProvider  `json:"provider,omitempty"`
+	ID               string            `json:"id"`
+	Name             string            `json:"name"`
+	Description      string            `json:"description,omitempty"`
+	Family           string            `json:"family,omitempty"`
+	Attachment       bool              `json:"attachment"`
+	Reasoning        bool              `json:"reasoning"`
+	ReasoningOptions []ReasoningOption `json:"reasoning_options,omitempty"`
+	ToolCall         bool              `json:"tool_call"`
+	StructuredOutput *bool             `json:"structured_output,omitempty"`
+	Temperature      bool              `json:"temperature"`
+	Interleaved      json.RawMessage   `json:"interleaved,omitempty"`
+	Knowledge        string            `json:"knowledge,omitempty"`
+	ReleaseDate      string            `json:"release_date,omitempty"`
+	LastUpdated      string            `json:"last_updated,omitempty"`
+	Modalities       *Modalities       `json:"modalities,omitempty"`
+	OpenWeights      bool              `json:"open_weights"`
+	Limit            Limit             `json:"limit"`
+	Cost             *Cost             `json:"cost,omitempty"`
+	Status           string            `json:"status,omitempty"`
+	Experimental     json.RawMessage   `json:"experimental,omitempty"`
+	Provider         *OfferingProvider `json:"provider,omitempty"`
 }
 
 // OfferingProvider holds per-offering provider overrides.
@@ -156,7 +156,7 @@ type Lab struct {
 
 // Offering is a flattened provider×model row for browsing.
 type Offering struct {
-	ProviderID   string
-	ProviderName string
-	Model        OfferingModel
+	ProviderID   string        `json:"provider_id"`
+	ProviderName string        `json:"provider_name"`
+	Model        OfferingModel `json:"model"`
 }
