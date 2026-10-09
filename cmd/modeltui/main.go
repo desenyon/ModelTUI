@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -11,73 +13,78 @@ import (
 	"github.com/charmbracelet/colorprofile"
 	"github.com/spf13/cobra"
 
+	"github.com/desenyon/ModelTUI/internal/catalog"
 	"github.com/desenyon/ModelTUI/internal/ui"
 	"github.com/desenyon/ModelTUI/internal/update"
 )
 
-func main() {
-	// Prefer rich color even when terminal detection is conservative (e.g. some multiplexers).
-	if os.Getenv("COLORTERM") == "" {
-		_ = os.Setenv("COLORTERM", "truecolor")
-	}
-	if os.Getenv("TERM") == "" {
-		_ = os.Setenv("TERM", "xterm-256color")
-	}
-
+func newRootCommand() *cobra.Command {
+	client := catalog.NewClient()
+	timeout := 45 * time.Second
 	root := &cobra.Command{
-		Use:   "modeltui",
-		Short: "A glamorous TUI for the models.dev AI model catalog",
-		Long: `ModelTUI is a Charm-powered terminal UI for models.dev.
-
-Browse canonical models, providers, offerings, and labs with live pricing,
-capabilities, modalities, benchmarks, and every field exposed by the API.
-
-Press space to refresh the catalog. Requests are spaced and honor HTTP 429.`,
-		Version: update.Version,
+		Use: "modeltui", Short: "A glamorous TUI for the models.dev AI model catalog",
+		Long:    "Browse models, providers, offerings and labs in an animated Charm TUI.\nUse modeltui list for searchable table or JSON output without a terminal.",
+		Version: update.Version, Args: cobra.NoArgs, SilenceUsage: true, SilenceErrors: true,
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			if timeout <= 0 {
+				return fmt.Errorf("timeout must be positive")
+			}
+			if client.CacheDir == "" {
+				return fmt.Errorf("cache-dir must not be empty")
+			}
+			client.HTTPClient.Timeout = timeout
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			p := tea.NewProgram(ui.New(), tea.WithColorProfile(colorprofile.TrueColor))
-			_, err := p.Run()
+			opts := []tea.ProgramOption{tea.WithContext(cmd.Context())}
+			if _, noColor := os.LookupEnv("NO_COLOR"); !noColor {
+				opts = append(opts, tea.WithColorProfile(colorprofile.TrueColor))
+			}
+			_, err := tea.NewProgram(ui.NewWithClient(cmd.Context(), client), opts...).Run()
 			return err
 		},
 	}
-
+	flags := root.PersistentFlags()
+	flags.BoolVar(&client.Offline, "offline", false, "Use disk cache or embedded snapshot without catalog network requests")
+	flags.StringVar(&client.CacheDir, "cache-dir", client.CacheDir, "Directory for catalog and rate metadata")
+	flags.DurationVar(&timeout, "timeout", 45*time.Second, "Catalog HTTP request timeout (for example 10s)")
+	root.AddCommand(newListCommand(client))
 	root.AddCommand(&cobra.Command{
-		Use:   "update",
-		Short: "Check for and install the latest ModelTUI release",
+		Use: "update", Short: "Install the latest ModelTUI release archive", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if client.Offline {
+				return catalog.ErrOffline
+			}
 			ctx, cancel := context.WithTimeout(cmd.Context(), 3*time.Minute)
 			defer cancel()
 			res, err := update.Check(ctx, "desenyon/ModelTUI")
 			if err != nil {
 				return err
 			}
-			fmt.Printf("current=%s latest=%s\n", res.Current, res.Latest)
+			fmt.Fprintf(cmd.OutOrStdout(), "current=%s latest=%s\n", res.Current, res.Latest)
 			if res.UpToDate {
-				fmt.Println("Already up to date.")
+				fmt.Fprintln(cmd.OutOrStdout(), "Already up to date.")
 				return nil
 			}
-			if res.AssetURL == "" {
-				return fmt.Errorf("latest release has no binary for this platform")
-			}
-			fmt.Printf("Downloading %s…\n", res.AssetName)
+			fmt.Fprintf(cmd.OutOrStdout(), "Downloading %s…\n", res.AssetName)
 			if err := update.Apply(ctx, res.AssetURL); err != nil {
 				return err
 			}
-			fmt.Println("Updated successfully. Restart modeltui.")
+			fmt.Fprintln(cmd.OutOrStdout(), "Updated successfully. Restart modeltui.")
 			return nil
 		},
 	})
+	root.AddCommand(&cobra.Command{Use: "version", Short: "Print version", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
+		_, err := fmt.Fprintln(cmd.OutOrStdout(), update.Version)
+		return err
+	}})
+	return root
+}
 
-	root.AddCommand(&cobra.Command{
-		Use:   "version",
-		Short: "Print version",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println(update.Version)
-			return nil
-		},
-	})
-
-	if err := fang.Execute(context.Background(), root, fang.WithVersion(update.Version)); err != nil {
+func main() {
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	if err := fang.Execute(ctx, newRootCommand(), fang.WithVersion(update.Version)); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

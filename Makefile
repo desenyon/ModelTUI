@@ -1,13 +1,32 @@
-.PHONY: run build test install
+GO ?= go
+
+.PHONY: run build test test-race vet fmt fmt-check smoke check install
 
 run:
-	go run ./cmd/modeltui
+	$(GO) run ./cmd/modeltui
 
 build:
-	go build -o bin/modeltui ./cmd/modeltui
+	$(GO) build -o bin/modeltui ./cmd/modeltui
 
 test:
-	go test ./...
+	$(GO) test ./...
+
+test-race:
+	$(GO) test -race ./...
+
+vet:
+	$(GO) vet ./...
+
+fmt:
+	gofmt -w cmd internal
+
+fmt-check:
+	@test -z "$$(gofmt -l cmd internal)" || (gofmt -l cmd internal; exit 1)
+
+smoke: build
+	python3 scripts/smoke.py ./bin/modeltui
+
+check: fmt-check vet test-race smoke
 
 install:
-	go install ./cmd/modeltui
+	$(GO) install ./cmd/modeltui

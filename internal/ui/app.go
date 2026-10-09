@@ -60,18 +60,20 @@ type loadMsg struct {
 	retryAfter  time.Duration
 }
 
-type autoRefreshMsg struct{}
+type autoRefreshMsg struct{ generation uint64 }
 
 type model struct {
-	theme   Theme
-	width   int
-	height  int
-	ready   bool
-	loading bool
-	err     string
-	source  string
-	index   *catalog.Index
-	client  *catalog.Client
+	ctx               context.Context
+	refreshGeneration uint64
+	theme             Theme
+	width             int
+	height            int
+	ready             bool
+	loading           bool
+	err               string
+	source            string
+	index             *catalog.Index
+	client            *catalog.Client
 
 	tab    tabID
 	focus  focusPane
@@ -92,10 +94,11 @@ type model struct {
 	status   string
 	zones    *zone.Manager
 
-	capsSelected []string
-	filterOpen   bool
-	filterForm   *huh.Form
-	refreshing   bool
+	capsSelected    []string
+	filterSelection *[]string
+	filterOpen      bool
+	filterForm      *huh.Form
+	refreshing      bool
 }
 
 type keyMap struct {
@@ -134,7 +137,16 @@ func newKeyMap() keyMap {
 }
 
 // New creates the root Bubble Tea model.
-func New() tea.Model {
+func New() tea.Model { return NewWithClient(context.Background(), catalog.NewClient()) }
+
+// NewWithClient shares configuration and request state across UI commands.
+func NewWithClient(ctx context.Context, client *catalog.Client) tea.Model {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if client == nil {
+		client = catalog.NewClient()
+	}
 	theme := NewTheme()
 	z := zone.New()
 
@@ -182,6 +194,7 @@ func New() tea.Model {
 	h.Styles.FullSeparator = h.Styles.ShortSeparator
 
 	m := model{
+		ctx:         ctx,
 		theme:       theme,
 		loading:     true,
 		tab:         tabModels,
@@ -194,7 +207,7 @@ func New() tea.Model {
 		panelSpring: newSpring(10.0, 0.7),
 		pulseAt:     time.Now(),
 		zones:       z,
-		client:      catalog.NewClient(),
+		client:      client,
 		status:      "Fetching models.dev catalog…",
 	}
 	m.lists[tabModels] = mkList("Canonical models")
@@ -214,23 +227,33 @@ func (m model) Init() tea.Cmd {
 		m.bootstrapCatalog(),
 		tickAnim(),
 		m.progress.SetPercent(0.08),
-		scheduleAutoRefresh(catalog.AutoRefreshEvery),
 	)
 }
 
-func scheduleAutoRefresh(d time.Duration) tea.Cmd {
+func (m *model) scheduleAutoRefresh(d time.Duration) tea.Cmd {
+	if m.client.Offline {
+		return nil
+	}
+	m.refreshGeneration++
+	generation := m.refreshGeneration
 	if d < time.Second {
 		d = time.Second
 	}
-	return tea.Tick(d, func(time.Time) tea.Msg { return autoRefreshMsg{} })
+	return tea.Tick(d, func(time.Time) tea.Msg { return autoRefreshMsg{generation: generation} })
+}
+
+func (m model) requestTimeout() time.Duration {
+	if m.client.HTTPClient != nil && m.client.HTTPClient.Timeout > 0 {
+		return m.client.HTTPClient.Timeout
+	}
+	return 45 * time.Second
 }
 
 func (m model) bootstrapCatalog() tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-		defer cancel()
-		client := catalog.NewClient()
-		cat, source, err := client.LoadCatalog(ctx)
+		// HTTPClient.Timeout bounds the request. Only the caller's cancellation
+		// should prevent LoadCatalog from falling back to cache or snapshot.
+		cat, source, err := m.client.LoadCatalog(m.ctx)
 		if err != nil {
 			return loadMsg{err: err}
 		}
@@ -240,9 +263,9 @@ func (m model) bootstrapCatalog() tea.Cmd {
 
 func (m model) refreshCatalog(force, silent bool) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		ctx, cancel := context.WithTimeout(m.ctx, m.requestTimeout())
 		defer cancel()
-		client := catalog.NewClient()
+		client := m.client
 		res := client.RefreshCatalog(ctx, force)
 		if res.Err != nil {
 			return loadMsg{err: res.Err, silent: silent, retryAfter: res.RetryAfter}
@@ -298,7 +321,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if msg.retryAfter > 0 {
 					m.status = fmt.Sprintf("Rate limited — next try in %s", msg.retryAfter.Round(time.Second))
 				}
-				return m, scheduleAutoRefresh(m.client.NextAutoRefreshIn())
+				return m, m.scheduleAutoRefresh(m.client.NextAutoRefreshIn())
 			}
 			m.loading = false
 			m.err = msg.err.Error()
@@ -309,7 +332,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = ""
 		if msg.notModified && msg.index == nil {
 			m.status = "Catalog already up to date"
-			return m, scheduleAutoRefresh(m.client.NextAutoRefreshIn())
+			return m, m.scheduleAutoRefresh(m.client.NextAutoRefreshIn())
 		}
 		if msg.index != nil {
 			m.index = msg.index
@@ -323,23 +346,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !msg.silent {
 			cmds = append(cmds, m.progress.SetPercent(1))
 		}
-		cmds = append(cmds, scheduleAutoRefresh(m.client.NextAutoRefreshIn()))
+		cmds = append(cmds, m.scheduleAutoRefresh(m.client.NextAutoRefreshIn()))
 		return m, tea.Batch(cmds...)
 
 	case autoRefreshMsg:
+		if m.client.Offline || msg.generation != m.refreshGeneration {
+			return m, nil
+		}
 		if m.loading || m.refreshing || m.filterOpen {
-			return m, scheduleAutoRefresh(m.client.NextAutoRefreshIn())
+			return m, m.scheduleAutoRefresh(m.client.NextAutoRefreshIn())
 		}
 		if !m.client.ShouldAutoRefresh() {
-			return m, scheduleAutoRefresh(m.client.NextAutoRefreshIn())
+			return m, m.scheduleAutoRefresh(m.client.NextAutoRefreshIn())
 		}
 		if ok, wait := m.client.CanRefresh(false); !ok {
 			m.status = fmt.Sprintf("Auto-refresh waiting %s (rate limit spacing)", wait.Round(time.Second))
-			return m, scheduleAutoRefresh(wait)
+			return m, m.scheduleAutoRefresh(wait)
 		}
 		m.refreshing = true
 		m.status = "Auto-refreshing models.dev…"
-		return m, tea.Batch(m.refreshCatalog(false, true), scheduleAutoRefresh(catalog.AutoRefreshEvery))
+		return m, m.refreshCatalog(false, true)
 
 	case spinner.TickMsg:
 		var cmd tea.Cmd
@@ -378,6 +404,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch m.filterForm.State {
 		case huh.StateCompleted:
+			if m.filterSelection != nil {
+				m.capsSelected = *m.filterSelection
+				m.filterSelection = nil
+			}
 			m.filterOpen = false
 			m.filterForm = nil
 			cmds = append(cmds, cmd)
@@ -386,6 +416,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = fmt.Sprintf("Filters: %s", filterSummary(m.capsSelected))
 			return m, tea.Batch(cmds...)
 		case huh.StateAborted:
+			m.filterSelection = nil
 			m.filterOpen = false
 			m.filterForm = nil
 			return m, cmd
@@ -417,9 +448,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case key.Matches(msg, m.keys.CapsFilter):
 			m.filterOpen = true
-			m.filterForm = newFilterForm(&m.capsSelected)
+			selected := append([]string(nil), m.capsSelected...)
+			m.filterSelection = &selected
+			m.filterForm = newFilterForm(m.filterSelection)
 			return m, m.filterForm.Init()
 		case key.Matches(msg, m.keys.Refresh):
+			if m.client.Offline {
+				m.status = "Offline mode: refresh disabled"
+				return m, nil
+			}
 			if m.refreshing {
 				m.status = "Refresh already in flight…"
 				return m, nil

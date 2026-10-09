@@ -2,12 +2,16 @@ package catalog
 
 import (
 	"context"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -15,27 +19,25 @@ import (
 var snapshotJSON []byte
 
 const (
-	defaultBaseURL = "https://models.dev"
-	userAgent      = "modeltui/1.0 (+https://github.com/desenyon/ModelTUI)"
+	defaultBaseURL  = "https://models.dev"
+	userAgent       = "modeltui/1.0 (+https://github.com/desenyon/ModelTUI)"
+	maxCatalogBytes = 32 << 20
 )
 
-// Client fetches models.dev JSON endpoints.
+// Client fetches models.dev data. Configure fields before use; share a pointer
+// across callers. A client may be used concurrently but must not be copied.
 type Client struct {
 	BaseURL    string
 	HTTPClient *http.Client
 	CacheDir   string
+	Offline    bool
+	mu         sync.Mutex
+	state      *rateState
+	inFlight   bool
 }
 
-// NewClient returns a client with sensible defaults.
 func NewClient() *Client {
-	cache := filepath.Join(userCacheDir(), "modeltui")
-	return &Client{
-		BaseURL: defaultBaseURL,
-		HTTPClient: &http.Client{
-			Timeout: 45 * time.Second,
-		},
-		CacheDir: cache,
-	}
+	return &Client{BaseURL: defaultBaseURL, HTTPClient: &http.Client{Timeout: 45 * time.Second}, CacheDir: filepath.Join(userCacheDir(), "modeltui")}
 }
 
 func userCacheDir() string {
@@ -45,72 +47,122 @@ func userCacheDir() string {
 	return os.TempDir()
 }
 
-// ParseCatalog decodes catalog JSON bytes.
+// ParseCatalog requires both catalog maps, while accepting new upstream fields.
 func ParseCatalog(data []byte) (*Catalog, error) {
 	var cat Catalog
 	if err := json.Unmarshal(data, &cat); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decode catalog: %w", err)
 	}
-	if cat.Models == nil {
-		cat.Models = map[string]CanonicalModel{}
-	}
-	if cat.Providers == nil {
-		cat.Providers = map[string]Provider{}
+	if cat.Models == nil || cat.Providers == nil {
+		return nil, fmt.Errorf("catalog must contain models and providers objects")
 	}
 	for id, p := range cat.Providers {
 		if p.ID == "" {
 			p.ID = id
-			cat.Providers[id] = p
+		}
+		if p.Name == "" {
+			p.Name = p.ID
 		}
 		if p.Models == nil {
 			p.Models = map[string]OfferingModel{}
-			cat.Providers[id] = p
 		}
+		for mid, m := range p.Models {
+			if m.ID == "" {
+				m.ID = mid
+			}
+			if m.Name == "" {
+				m.Name = m.ID
+			}
+			p.Models[mid] = m
+		}
+		cat.Providers[id] = p
 	}
 	for id, m := range cat.Models {
 		if m.ID == "" {
 			m.ID = id
-			cat.Models[id] = m
 		}
+		if m.Name == "" {
+			m.Name = m.ID
+		}
+		cat.Models[id] = m
 	}
 	return &cat, nil
 }
 
-func (c *Client) cachePath() string {
-	return filepath.Join(c.CacheDir, "catalog.json")
+func (c *Client) cachePath() string { return filepath.Join(c.CacheDir, "catalog.json") }
+
+// atomicWrite uses unique sibling files so failed/concurrent writes cannot
+// truncate the previous cache. Rename is atomic on supported Unix platforms.
+func atomicWrite(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), ".modeltui-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err = f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err = f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err = f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
 }
 
 func (c *Client) writeCache(cat *Catalog) error {
-	if err := os.MkdirAll(c.CacheDir, 0o755); err != nil {
-		return err
-	}
 	data, err := json.Marshal(cat)
 	if err != nil {
 		return err
 	}
-	tmp := c.cachePath() + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return err
+	return atomicWrite(c.cachePath(), data)
+}
+
+func digest(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func (c *Client) readCacheWithHash() (*Catalog, string, error) {
+	f, err := os.Open(c.cachePath())
+	if err != nil {
+		return nil, "", err
 	}
-	return os.Rename(tmp, c.cachePath())
+	defer f.Close()
+	data, err := readBounded(f, maxCatalogBytes)
+	if err != nil {
+		return nil, "", err
+	}
+	cat, err := ParseCatalog(data)
+	return cat, digest(data), err
 }
 
 func (c *Client) readCache() (*Catalog, error) {
-	data, err := os.ReadFile(c.cachePath())
+	cat, _, err := c.readCacheWithHash()
+	return cat, err
+}
+
+func readBounded(r io.Reader, limit int64) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, limit+1))
 	if err != nil {
 		return nil, err
 	}
-	return ParseCatalog(data)
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("catalog exceeds %d-byte limit", limit)
+	}
+	return data, nil
 }
 
-// Ensure CacheDir exists (used by tests / installers).
-func (c *Client) EnsureCacheDir() error {
-	return os.MkdirAll(c.CacheDir, 0o755)
-}
+func (c *Client) EnsureCacheDir() error { return os.MkdirAll(c.CacheDir, 0755) }
 
-// WarmFromSnapshot writes the embedded snapshot into the cache if missing.
 func (c *Client) WarmFromSnapshot() error {
-	if _, err := os.Stat(c.cachePath()); err == nil {
+	if _, err := c.readCache(); err == nil {
 		return nil
 	}
 	cat, err := ParseCatalog(snapshotJSON)
@@ -120,20 +172,5 @@ func (c *Client) WarmFromSnapshot() error {
 	return c.writeCache(cat)
 }
 
-// Ping is a lightweight connectivity check (HEAD) that still respects spacing.
-func (c *Client) Ping(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodHead, c.BaseURL+"/catalog.json", nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("User-Agent", userAgent)
-	res, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-	if res.StatusCode >= 400 {
-		return fmt.Errorf("ping status %s", res.Status)
-	}
-	return nil
-}
+// Ping checks the catalog using the same refresh and spacing policy as browsing.
+func (c *Client) Ping(ctx context.Context) error { return c.RefreshCatalog(ctx, false).Err }

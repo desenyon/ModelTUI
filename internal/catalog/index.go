@@ -23,14 +23,22 @@ func BuildIndex(cat *Catalog, source string) *Index {
 		idx.Models = append(idx.Models, m)
 	}
 	sort.Slice(idx.Models, func(i, j int) bool {
-		return strings.ToLower(idx.Models[i].Name) < strings.ToLower(idx.Models[j].Name)
+		a, b := strings.ToLower(idx.Models[i].Name), strings.ToLower(idx.Models[j].Name)
+		if a == b {
+			return idx.Models[i].ID < idx.Models[j].ID
+		}
+		return a < b
 	})
 
 	for _, p := range cat.Providers {
 		idx.Providers = append(idx.Providers, p)
 	}
 	sort.Slice(idx.Providers, func(i, j int) bool {
-		return strings.ToLower(idx.Providers[i].Name) < strings.ToLower(idx.Providers[j].Name)
+		a, b := strings.ToLower(idx.Providers[i].Name), strings.ToLower(idx.Providers[j].Name)
+		if a == b {
+			return idx.Providers[i].ID < idx.Providers[j].ID
+		}
+		return a < b
 	})
 
 	for _, p := range idx.Providers {
@@ -59,7 +67,11 @@ func BuildIndex(cat *Catalog, source string) *Index {
 	}
 	for id, models := range labMap {
 		sort.Slice(models, func(i, j int) bool {
-			return strings.ToLower(models[i].Name) < strings.ToLower(models[j].Name)
+			a, b := strings.ToLower(models[i].Name), strings.ToLower(models[j].Name)
+			if a == b {
+				return models[i].ID < models[j].ID
+			}
+			return a < b
 		})
 		idx.Labs = append(idx.Labs, Lab{
 			ID:     id,
@@ -68,7 +80,11 @@ func BuildIndex(cat *Catalog, source string) *Index {
 		})
 	}
 	sort.Slice(idx.Labs, func(i, j int) bool {
-		return strings.ToLower(idx.Labs[i].Name) < strings.ToLower(idx.Labs[j].Name)
+		a, b := strings.ToLower(idx.Labs[i].Name), strings.ToLower(idx.Labs[j].Name)
+		if a == b {
+			return idx.Labs[i].ID < idx.Labs[j].ID
+		}
+		return a < b
 	})
 
 	return idx
